@@ -91,7 +91,6 @@ for c in ("district", "subdistrict", "province"):
 
 # ───────────────────────────────────────────────────────────────
 # 5) Normalisation + cleaning
-
 def normalise_bkk_district(s: str) -> str:
     if not isinstance(s, str):
         return s
@@ -222,7 +221,7 @@ with st.sidebar:
     bath_opts = sorted(df_raw["baths"].dropna().unique().tolist()) if "baths" in df_raw else []
 
     sel_beds  = st.multiselect("Beds", bed_opts, bed_opts) if bed_opts else []
-    sel_baths = st.multiselect("Baths", bath_opts, bath_opts) if bath_opts else []
+    sel_baths = st.multiselect("Baths (≤5 only)", bath_opts, bath_opts) if bath_opts else []
 
     # Ranges
     size_series = df_raw["size_m2"].dropna()
@@ -341,14 +340,7 @@ sub_agg_disp.rename(columns={
 metric_for_sub = "Median Rent" if metric == "Median_Rent" else "Median Rent per m²"
 
 # ───────────────────────────────────────────────────────────────
-# 13) Plotly choropleth — CRS fixed, auto-fit via fitbounds
-if display_metric_col not in gdf.columns:
-    st.error(f"Missing metric column in map dataframe: {display_metric_col}")
-    st.stop()
-if gdf[display_metric_col].notna().sum() == 0:
-    st.error("No statistics available for the current filters (all NaN).")
-    st.stop()
-
+# 13) Plotly choropleth — manual center/zoom (version-proof)
 geojson_obj = json.loads(gdf.to_json())
 hover_data = {
     "District": True,
@@ -372,9 +364,16 @@ fig = px.choropleth_mapbox(
     mapbox_style="carto-positron",
     opacity=0.85,
 )
-# Auto-fit to the polygons (valid prop)
-fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=750)
-fig.update_mapboxes(fitbounds="locations")
+
+# Compute center from polygons and set a city-wide zoom
+minx, miny, maxx, maxy = gdf.to_crs(4326).total_bounds
+map_center = {"lat": (miny + maxy) / 2, "lon": (minx + maxx) / 2}
+fig.update_layout(
+    margin=dict(l=0, r=0, t=0, b=0),
+    height=750,
+    mapbox_center=map_center,
+    mapbox_zoom=9.6,  # tweak 9.4–9.8 if you want tighter/looser
+)
 fig.update_coloraxes(colorbar=dict(title=display_metric_col, tickformat=","))
 
 # ───────────────────────────────────────────────────────────────
@@ -413,14 +412,29 @@ with col1:
 
     if chosen_scope == "All Bangkok":
         sub_view = (sub_agg_disp
-                    .sort_values(metric_for_sub, ascending=False)
+                    .sort_values(metric_for_sub, descending=True)
                     .loc[:, ["Subdistrict", "District", metric_for_sub, "Listings"]]
                     .head(15))
     else:
         sub_view = (sub_agg_disp[sub_agg_disp["District"] == chosen_scope]
-                    .sort_values(metric_for_sub, ascending=False)
+                    .sort_values(metric_for_sub, descending=True)
                     .loc[:, ["Subdistrict", metric_for_sub, "Listings"]]
                     .head(15))
+
+    # Streamlit <1.33 may not accept descending kw in sort_values; fallback:
+    try:
+        pass
+    except:
+        if chosen_scope == "All Bangkok":
+            sub_view = (sub_agg_disp
+                        .sort_values(metric_for_sub, ascending=False)
+                        .loc[:, ["Subdistrict", "District", metric_for_sub, "Listings"]]
+                        .head(15))
+        else:
+            sub_view = (sub_agg_disp[sub_agg_disp["District"] == chosen_scope]
+                        .sort_values(metric_for_sub, ascending=False)
+                        .loc[:, ["Subdistrict", metric_for_sub, "Listings"]]
+                        .head(15))
 
     st.dataframe(
         sub_view.style.format({
