@@ -176,7 +176,7 @@ with st.sidebar:
     bath_opts = sorted(df_raw["baths"].dropna().unique().tolist()) if "baths" in df_raw else []
 
     sel_beds  = st.multiselect("Beds", bed_opts, bed_opts) if bed_opts else []
-    sel_baths = st.multiselect("Baths (≤5 only)", bath_opts, bath_opts) if bath_opts else []
+    sel_baths = st.multiselect("Baths", bath_opts, bath_opts) if bath_opts else []
 
     size_series = df_raw["size_m2"].dropna()
     rent_series = df_raw["rent_thb"].dropna()
@@ -353,11 +353,6 @@ with col1:
 | **Mean Rent** | Average rent across listings. |
 | **25th / 75th Percentile** | Cheaper and pricier ends of the market. |
 | **Median Rent per m²** | Median monthly rent divided by interior area. |
-
----
-💡 **Moving to Bangkok?**  
-No-BS district breakdowns, commute times, rent bands, and pitfalls:  
-👉 _Add your CTA/link here (Gumroad/YouTube/etc.)_
         """,
         unsafe_allow_html=True
     )
@@ -405,6 +400,7 @@ with col2:
         """
 📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  
 ☕️ **[Support](https://buymeacoffee.com/malcolmlegy)**
+💡  **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**
         """,
         unsafe_allow_html=True
     )
