@@ -399,7 +399,6 @@ with col2:
     st.markdown(
         """
 📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  
-☕️ **[Support](https://buymeacoffee.com/malcolmlegy)**
 💡  **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**
 
         """,
