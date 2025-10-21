@@ -401,6 +401,7 @@ with col2:
 📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  
 ☕️ **[Support](https://buymeacoffee.com/malcolmlegy)**
 💡  **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**
+
         """,
         unsafe_allow_html=True
     )
