@@ -111,7 +111,7 @@ def normalise_bkk_district(s: str) -> str:
         "bangrak": "bang rak",
         "pathumwan": "pathum wan",
         "samphanthawongse": "samphanthawong",
-        "bang kholaem": "bang kho laem",   # common slip
+        "bang kholaem": "bang kho laem",
         "ratburana": "rat burana",
     }
     return fixes.get(t, t)
@@ -119,11 +119,11 @@ def normalise_bkk_district(s: str) -> str:
 # Subdistrict cleaner
 SUB_DROP_PREFIXES = ("studio ",)  # drop “Studio …”
 SUB_FIXES = {
-    "saphan song": "saphan sung",       # typo
+    "saphan song": "saphan sung",  # typo
     # If a pure district name appears in subdistrict col, drop it (unless truly valid)
     "yan nawa": None,
     "bang sue": None,
-    "bang na": None,                    # keep only if you know it's the khwaeng, else drop
+    "bang na": None,  # keep only if you know it's the khwaeng, else drop
 }
 def clean_subdistrict(s: str):
     if not isinstance(s, str):
@@ -142,10 +142,8 @@ df_raw = df_raw[df_raw["subdistrict"].notna()]  # drop junk rows we nulled
 
 # Detect district name column in GeoJSON (English or Thai)
 geo_name_cands = [
-    # English
-    "KHET_EN", "khet_en", "DISTRICT", "district", "NAME", "name",
-    # Thai
-    "KHET_TH", "khet_th", "NAME_TH", "name_th"
+    "KHET_EN", "khet_en", "DISTRICT", "district", "NAME", "name",  # English
+    "KHET_TH", "khet_th", "NAME_TH", "name_th"                     # Thai
 ]
 geo_name_col = next((c for c in geo_name_cands if c in gdf_base.columns), None)
 if geo_name_col is None:
@@ -160,24 +158,67 @@ gdf_base["district_norm"] = gdf_base[geo_name_col].astype(str).map(normalise_bkk
 DISTRICT_OPTIONS = sorted(gdf_base["district_norm"].dropna().unique().tolist())
 
 # ───────────────────────────────────────────────────────────────
-# 5) Sidebar filters (District above Subdistrict)
+# 5) Sidebar filters (District above Subdistrict) + Select All buttons
 with st.sidebar:
     st.header("Filters")
 
-    # District selector (defaults to all in GeoJSON so joins are always valid)
-    sel_districts = st.multiselect("District (khet)", DISTRICT_OPTIONS, DISTRICT_OPTIONS)
+    # Keep selections in session_state so buttons can update them
+    if "sel_districts" not in st.session_state:
+        st.session_state.sel_districts = DISTRICT_OPTIONS
+
+    st.write("**District (khet)**")
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        if st.button("Select all districts"):
+            st.session_state.sel_districts = DISTRICT_OPTIONS
+            st.experimental_rerun()
+    with c2:
+        if st.button("Clear districts"):
+            st.session_state.sel_districts = []
+            st.experimental_rerun()
+
+    sel_districts = st.multiselect(
+        label="",
+        options=DISTRICT_OPTIONS,
+        default=st.session_state.sel_districts,
+        key="sel_districts_multiselect",
+    )
+    st.session_state.sel_districts = sel_districts
 
     # Subdistrict options limited by selected districts from current data
-    sub_opts_df = df_raw[df_raw["district_norm"].isin(sel_districts)]
+    sub_opts_df = df_raw[df_raw["district_norm"].isin(sel_districts)] if sel_districts else df_raw
     sub_opts = sorted(sub_opts_df["subdistrict"].dropna().unique().tolist())
-    sel_subs = st.multiselect("Subdistrict (khwaeng)", sub_opts, sub_opts)
 
+    if "sel_subs" not in st.session_state:
+        st.session_state.sel_subs = sub_opts
+
+    st.write("**Subdistrict (khwaeng)**")
+    s1, s2 = st.columns([1, 1])
+    with s1:
+        if st.button("Select all subdistricts"):
+            st.session_state.sel_subs = sub_opts
+            st.experimental_rerun()
+    with s2:
+        if st.button("Clear subdistricts"):
+            st.session_state.sel_subs = []
+            st.experimental_rerun()
+
+    sel_subs = st.multiselect(
+        label="",
+        options=sub_opts,
+        default=st.session_state.sel_subs,
+        key="sel_subs_multiselect",
+    )
+    st.session_state.sel_subs = sel_subs
+
+    # Beds / Baths
     bed_opts  = sorted(df_raw["beds"].dropna().unique().tolist()) if "beds" in df_raw else []
     bath_opts = sorted(df_raw["baths"].dropna().unique().tolist()) if "baths" in df_raw else []
 
     sel_beds  = st.multiselect("Beds", bed_opts, bed_opts) if bed_opts else []
     sel_baths = st.multiselect("Baths", bath_opts, bath_opts) if bath_opts else []
 
+    # Ranges
     size_series = df_raw["size_m2"].dropna()
     rent_series = df_raw["rent_thb"].dropna()
     size_min, size_max = float(size_series.min()), float(size_series.max())
@@ -199,7 +240,9 @@ with st.sidebar:
     metric_label = st.radio("Colour metric", list(metric_labels.keys()))
     metric = metric_labels[metric_label]
 
-    if st.button("Reset filters"):
+    if st.button("Reset all filters"):
+        for k in ("sel_districts", "sel_subs"):
+            st.session_state.pop(k, None)
         st.experimental_rerun()
 
 # ───────────────────────────────────────────────────────────────
@@ -295,13 +338,20 @@ sub_agg_disp.rename(columns={
 metric_for_sub = "Median Rent" if metric == "Median_Rent" else "Median Rent per m²"
 
 # ───────────────────────────────────────────────────────────────
-# 11) Plotly choropleth — safe hover_data and guards
+# 11) Plotly choropleth — safe hover_data + auto-fit bounds
 if display_metric_col not in gdf.columns:
     st.error(f"Missing metric column in map dataframe: {display_metric_col}")
     st.stop()
 if gdf[display_metric_col].notna().sum() == 0:
     st.error("No statistics available for the current filters (all NaN).")
     st.stop()
+
+# Bounds + center from data (pad a bit)
+minx, miny, maxx, maxy = gdf.to_crs(4326).total_bounds
+pad_x = (maxx - minx) * 0.06
+pad_y = (maxy - miny) * 0.06
+map_center = {"lat": (miny + maxy) / 2, "lon": (minx + maxx) / 2}
+default_zoom = 9.8  # slightly wider than before
 
 geojson_obj = json.loads(gdf.to_json())
 hover_data = {
@@ -311,29 +361,39 @@ hover_data = {
     "25th Percentile": ":,.0f THB",
     "75th Percentile": ":,.0f THB",
     "Listings": True,
-    "district_norm": False,  # hide raw key
+    "district_norm": False,
 }
 
 fig = px.choropleth_mapbox(
     gdf,
     geojson=geojson_obj,
-    locations="district_norm",                 # column in gdf
-    featureidkey="properties.district_norm",   # property inside geojson features
-    color=display_metric_col,                  # pretty name column
+    locations="district_norm",
+    featureidkey="properties.district_norm",
+    color=display_metric_col,
     hover_name="District",
     hover_data=hover_data,
     color_continuous_scale="YlOrRd",
     mapbox_style="carto-positron",
-    center={"lat": 13.7563, "lon": 100.5018},
-    zoom=10.3,
+    center=map_center,
+    zoom=default_zoom,
     opacity=0.85,
 )
-fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=750)
+fig.update_layout(
+    margin=dict(l=0, r=0, t=0, b=0),
+    height=750,
+    mapbox=dict(
+        fitbounds="locations",
+        bounds=dict(
+            west=minx - pad_x, east=maxx + pad_x,
+            south=miny - pad_y, north=maxy + pad_y
+        ),
+    ),
+)
 fig.update_coloraxes(colorbar=dict(title=display_metric_col, tickformat=","))
 
 # ───────────────────────────────────────────────────────────────
-# 12) Layout
-col1, col2 = st.columns([1, 1])
+# 12) Layout (give map a tad more width) + compact footer line
+col1, col2 = st.columns([0.95, 1.05])
 
 with col1:
     st.title("Bangkok District Rent Explorer")
@@ -362,7 +422,6 @@ with col1:
 
     st.markdown("---")
     st.markdown("### Subdistricts (khwaeng)")
-    # Scope selector for drilldown (All or a single district)
     dist_opts = ["All Bangkok"] + sorted(sub_agg_disp["District"].unique().tolist())
     chosen_scope = st.selectbox("Scope", dist_opts, index=0)
 
@@ -395,12 +454,8 @@ with col1:
 
 with col2:
     st.plotly_chart(fig, use_container_width=True)
-    st.markdown("---")
     st.markdown(
-        """
-📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  
-💡  **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**
-
-        """,
-        unsafe_allow_html=True
+        "—  📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  ·  "
+        "💡 **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**",
+        unsafe_allow_html=True,
     )
