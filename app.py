@@ -75,7 +75,7 @@ for c in ("beds", "baths"):
 df_raw["size_m2"]  = pd.to_numeric(df_raw.get("size_m2"), errors="coerce")
 df_raw["rent_thb"] = pd.to_numeric(df_raw.get("rent_thb"), errors="coerce")
 
-# HARD CAP: drop any listing with baths > 5 (never shown/used anywhere)
+# HARD CAP: drop any listing with baths > 5
 if "baths" in df_raw.columns:
     df_raw = df_raw[(df_raw["baths"].isna()) | (df_raw["baths"] <= 5)].copy()
 
@@ -91,17 +91,11 @@ for c in ("district", "subdistrict", "province"):
 # ───────────────────────────────────────────────────────────────
 # 4) Normalisation + cleaning
 
-# District normaliser (handles Watthana/Vadhana, Toei/Toey, spacing, etc.)
 def normalise_bkk_district(s: str) -> str:
     if not isinstance(s, str):
         return s
-    t = s.strip().lower()
-    t = (
-        t.replace("  ", " ")
-         .replace("-", " ")
-         .replace(" amphoe", "")
-         .replace(" khet", "")
-    )
+    t = s.strip().lower().replace("  ", " ").replace("-", " ")
+    t = t.replace(" amphoe", "").replace(" khet", "")
     fixes = {
         "vadhana": "watthana",
         "wadthana": "watthana",
@@ -116,14 +110,12 @@ def normalise_bkk_district(s: str) -> str:
     }
     return fixes.get(t, t)
 
-# Subdistrict cleaner
-SUB_DROP_PREFIXES = ("studio ",)  # drop “Studio …”
+SUB_DROP_PREFIXES = ("studio ",)
 SUB_FIXES = {
-    "saphan song": "saphan sung",  # typo
-    # If a pure district name appears in subdistrict col, drop it (unless truly valid)
+    "saphan song": "saphan sung",
     "yan nawa": None,
     "bang sue": None,
-    "bang na": None,  # keep only if you know it's the khwaeng, else drop
+    "bang na": None,
 }
 def clean_subdistrict(s: str):
     if not isinstance(s, str):
@@ -138,12 +130,12 @@ def clean_subdistrict(s: str):
 
 df_raw["district_norm"] = df_raw["district"].astype(str).map(normalise_bkk_district)
 df_raw["subdistrict"]   = df_raw["subdistrict"].map(clean_subdistrict)
-df_raw = df_raw[df_raw["subdistrict"].notna()]  # drop junk rows we nulled
+df_raw = df_raw[df_raw["subdistrict"].notna()]  # drop junk rows
 
 # Detect district name column in GeoJSON (English or Thai)
 geo_name_cands = [
-    "KHET_EN", "khet_en", "DISTRICT", "district", "NAME", "name",  # English
-    "KHET_TH", "khet_th", "NAME_TH", "name_th"                     # Thai
+    "KHET_EN", "khet_en", "DISTRICT", "district", "NAME", "name",
+    "KHET_TH", "khet_th", "NAME_TH", "name_th"
 ]
 geo_name_col = next((c for c in geo_name_cands if c in gdf_base.columns), None)
 if geo_name_col is None:
@@ -154,15 +146,14 @@ if geo_name_col is None:
 # Normalised join key on geo side
 gdf_base["district_norm"] = gdf_base[geo_name_col].astype(str).map(normalise_bkk_district)
 
-# Canonical district list (from GeoJSON, so options match the map)
+# Canonical district list (from GeoJSON)
 DISTRICT_OPTIONS = sorted(gdf_base["district_norm"].dropna().unique().tolist())
 
 # ───────────────────────────────────────────────────────────────
-# 5) Sidebar filters (District above Subdistrict) + Select All buttons
+# 5) Sidebar filters + Select All buttons
 with st.sidebar:
     st.header("Filters")
 
-    # Keep selections in session_state so buttons can update them
     if "sel_districts" not in st.session_state:
         st.session_state.sel_districts = DISTRICT_OPTIONS
 
@@ -185,7 +176,6 @@ with st.sidebar:
     )
     st.session_state.sel_districts = sel_districts
 
-    # Subdistrict options limited by selected districts from current data
     sub_opts_df = df_raw[df_raw["district_norm"].isin(sel_districts)] if sel_districts else df_raw
     sub_opts = sorted(sub_opts_df["subdistrict"].dropna().unique().tolist())
 
@@ -211,14 +201,12 @@ with st.sidebar:
     )
     st.session_state.sel_subs = sel_subs
 
-    # Beds / Baths
     bed_opts  = sorted(df_raw["beds"].dropna().unique().tolist()) if "beds" in df_raw else []
     bath_opts = sorted(df_raw["baths"].dropna().unique().tolist()) if "baths" in df_raw else []
 
     sel_beds  = st.multiselect("Beds", bed_opts, bed_opts) if bed_opts else []
     sel_baths = st.multiselect("Baths", bath_opts, bath_opts) if bath_opts else []
 
-    # Ranges
     size_series = df_raw["size_m2"].dropna()
     rent_series = df_raw["rent_thb"].dropna()
     size_min, size_max = float(size_series.min()), float(size_series.max())
@@ -280,7 +268,6 @@ agg = (
         .reset_index()
 )
 
-# Pretty display names for map & tables
 agg_disp = agg.rename(columns={
     "Median_Rent": "Median Rent",
     "Mean_Rent": "Mean Rent",
@@ -294,14 +281,13 @@ agg_disp = agg.rename(columns={
 gdf = gdf_base.merge(agg_disp, on="district_norm", how="left")
 gdf["District"] = gdf["district_norm"].str.title()
 
-# Warn which districts have no data for current view
 display_metric_col = "Median Rent" if metric == "Median_Rent" else "Median Rent per m²"
 missing = gdf.loc[gdf[display_metric_col].isna(), ["district_norm"]].drop_duplicates()
 if not missing.empty:
     st.warning("No data for: " + ", ".join(missing["district_norm"].str.title().tolist()))
 
 # ───────────────────────────────────────────────────────────────
-# 9) Top-10 table (based on current metric)
+# 9) Top-10 table
 top10_table = (
     gdf[["District", display_metric_col]]
       .dropna(subset=[display_metric_col])
@@ -334,11 +320,10 @@ sub_agg_disp.rename(columns={
     "Median_Rent": "Median Rent",
     "Median_Rent_per_m2": "Median Rent per m²",
 }, inplace=True)
-
 metric_for_sub = "Median Rent" if metric == "Median_Rent" else "Median Rent per m²"
 
 # ───────────────────────────────────────────────────────────────
-# 11) Plotly choropleth — safe hover_data + auto-fit bounds
+# 11) Plotly choropleth — auto-center (no bounds prop)
 if display_metric_col not in gdf.columns:
     st.error(f"Missing metric column in map dataframe: {display_metric_col}")
     st.stop()
@@ -346,12 +331,10 @@ if gdf[display_metric_col].notna().sum() == 0:
     st.error("No statistics available for the current filters (all NaN).")
     st.stop()
 
-# Bounds + center from data (pad a bit)
+# center from data + slightly zoomed out
 minx, miny, maxx, maxy = gdf.to_crs(4326).total_bounds
-pad_x = (maxx - minx) * 0.06
-pad_y = (maxy - miny) * 0.06
 map_center = {"lat": (miny + maxy) / 2, "lon": (minx + maxx) / 2}
-default_zoom = 9.8  # slightly wider than before
+default_zoom = 9.8
 
 geojson_obj = json.loads(gdf.to_json())
 hover_data = {
@@ -378,21 +361,11 @@ fig = px.choropleth_mapbox(
     zoom=default_zoom,
     opacity=0.85,
 )
-fig.update_layout(
-    margin=dict(l=0, r=0, t=0, b=0),
-    height=750,
-    mapbox=dict(
-        fitbounds="locations",
-        bounds=dict(
-            west=minx - pad_x, east=maxx + pad_x,
-            south=miny - pad_y, north=maxy + pad_y
-        ),
-    ),
-)
+fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=750)
 fig.update_coloraxes(colorbar=dict(title=display_metric_col, tickformat=","))
 
 # ───────────────────────────────────────────────────────────────
-# 12) Layout (give map a tad more width) + compact footer line
+# 12) Layout + compact footer
 col1, col2 = st.columns([0.95, 1.05])
 
 with col1:
