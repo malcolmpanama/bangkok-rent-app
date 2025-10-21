@@ -68,15 +68,14 @@ except Exception as e:
     st.error(f"Failed to read GeoJSON at {GEOJSON}: {e}")
     st.stop()
 
-# ───────────────────────────────────────────────────────────────
-# 4) Data hygiene (types, metrics, text)
+# Ensure numeric types
 for c in ("beds", "baths"):
     if c in df_raw.columns:
         df_raw[c] = pd.to_numeric(df_raw[c], errors="coerce").astype("Int64")
 df_raw["size_m2"]  = pd.to_numeric(df_raw.get("size_m2"), errors="coerce")
 df_raw["rent_thb"] = pd.to_numeric(df_raw.get("rent_thb"), errors="coerce")
 
-# HARD CAP: drop any listing with baths > 5
+# HARD CAP: drop any listing with baths > 5 (never shown/used anywhere)
 if "baths" in df_raw.columns:
     df_raw = df_raw[(df_raw["baths"].isna()) | (df_raw["baths"] <= 5)].copy()
 
@@ -90,12 +89,19 @@ for c in ("district", "subdistrict", "province"):
         df_raw[c] = df_raw[c].astype(str).str.strip()
 
 # ───────────────────────────────────────────────────────────────
-# 5) Normalisation + cleaning
+# 4) Normalisation + cleaning
+
+# District normaliser (handles Watthana/Vadhana, Toei/Toey, spacing, etc.)
 def normalise_bkk_district(s: str) -> str:
     if not isinstance(s, str):
         return s
-    t = s.strip().lower().replace("  ", " ").replace("-", " ")
-    t = t.replace(" amphoe", "").replace(" khet", "")
+    t = s.strip().lower()
+    t = (
+        t.replace("  ", " ")
+         .replace("-", " ")
+         .replace(" amphoe", "")
+         .replace(" khet", "")
+    )
     fixes = {
         "vadhana": "watthana",
         "wadthana": "watthana",
@@ -105,18 +111,19 @@ def normalise_bkk_district(s: str) -> str:
         "bangrak": "bang rak",
         "pathumwan": "pathum wan",
         "samphanthawongse": "samphanthawong",
-        "bang kholaem": "bang kho laem",
+        "bang kholaem": "bang kho laem",   # common slip
         "ratburana": "rat burana",
     }
     return fixes.get(t, t)
 
-SUB_DROP_PREFIXES = ("studio ",)
+# Subdistrict cleaner
+SUB_DROP_PREFIXES = ("studio ",)  # drop “Studio …”
 SUB_FIXES = {
-    "saphan song": "saphan sung",
-    # Drop bare district names if they leak into subdistrict col:
+    "saphan song": "saphan sung",       # typo
+    # If a pure district name appears in subdistrict col, drop it (unless truly valid)
     "yan nawa": None,
     "bang sue": None,
-    "bang na": None,
+    "bang na": None,                    # keep only if you know it's the khwaeng, else drop
 }
 def clean_subdistrict(s: str):
     if not isinstance(s, str):
@@ -131,23 +138,13 @@ def clean_subdistrict(s: str):
 
 df_raw["district_norm"] = df_raw["district"].astype(str).map(normalise_bkk_district)
 df_raw["subdistrict"]   = df_raw["subdistrict"].map(clean_subdistrict)
-df_raw = df_raw[df_raw["subdistrict"].notna()]  # drop junk rows
+df_raw = df_raw[df_raw["subdistrict"].notna()]  # drop junk rows we nulled
 
-# ───────────────────────────────────────────────────────────────
-# 6) Geo hygiene: CRS guard + valid polygons only
-if getattr(gdf_base, "crs", None) is None:
-    # Many GeoJSONs are WGS84 but lack the tag
-    gdf_base = gdf_base.set_crs(4326, allow_override=True)
-else:
-    gdf_base = gdf_base.to_crs(4326)
-
-# Drop empties / non-polygons to avoid random far-away artifacts
-gdf_base = gdf_base[gdf_base.geometry.notna() & ~gdf_base.geometry.is_empty].copy()
-gdf_base = gdf_base[gdf_base.geometry.geom_type.isin(["Polygon", "MultiPolygon"])].copy()
-
-# Find a name column for districts (EN/TH)
+# Detect district name column in GeoJSON (English or Thai)
 geo_name_cands = [
+    # English
     "KHET_EN", "khet_en", "DISTRICT", "district", "NAME", "name",
+    # Thai
     "KHET_TH", "khet_th", "NAME_TH", "name_th"
 ]
 geo_name_col = next((c for c in geo_name_cands if c in gdf_base.columns), None)
@@ -159,71 +156,28 @@ if geo_name_col is None:
 # Normalised join key on geo side
 gdf_base["district_norm"] = gdf_base[geo_name_col].astype(str).map(normalise_bkk_district)
 
-# Canonical district list (from GeoJSON so options match the map)
+# Canonical district list (from GeoJSON, so options match the map)
 DISTRICT_OPTIONS = sorted(gdf_base["district_norm"].dropna().unique().tolist())
 
 # ───────────────────────────────────────────────────────────────
-# 7) Sidebar filters (District above Subdistrict) + Select All
+# 5) Sidebar filters (District above Subdistrict)
 with st.sidebar:
     st.header("Filters")
 
-    # Persist selections for select-all/clear buttons
-    if "sel_districts" not in st.session_state:
-        st.session_state.sel_districts = DISTRICT_OPTIONS
+    # District selector (defaults to all in GeoJSON so joins are always valid)
+    sel_districts = st.multiselect("District (khet)", DISTRICT_OPTIONS, DISTRICT_OPTIONS)
 
-    st.write("**District (khet)**")
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.button("Select all districts"):
-            st.session_state.sel_districts = DISTRICT_OPTIONS
-            st.experimental_rerun()
-    with c2:
-        if st.button("Clear districts"):
-            st.session_state.sel_districts = []
-            st.experimental_rerun()
-
-    sel_districts = st.multiselect(
-        label="",
-        options=DISTRICT_OPTIONS,
-        default=st.session_state.sel_districts,
-        key="sel_districts_multiselect",
-    )
-    st.session_state.sel_districts = sel_districts
-
-    # Subdistrict options limited by selected districts
-    sub_opts_df = df_raw[df_raw["district_norm"].isin(sel_districts)] if sel_districts else df_raw
+    # Subdistrict options limited by selected districts from current data
+    sub_opts_df = df_raw[df_raw["district_norm"].isin(sel_districts)]
     sub_opts = sorted(sub_opts_df["subdistrict"].dropna().unique().tolist())
+    sel_subs = st.multiselect("Subdistrict (khwaeng)", sub_opts, sub_opts)
 
-    if "sel_subs" not in st.session_state:
-        st.session_state.sel_subs = sub_opts
-
-    st.write("**Subdistrict (khwaeng)**")
-    s1, s2 = st.columns([1, 1])
-    with s1:
-        if st.button("Select all subdistricts"):
-            st.session_state.sel_subs = sub_opts
-            st.experimental_rerun()
-    with s2:
-        if st.button("Clear subdistricts"):
-            st.session_state.sel_subs = []
-            st.experimental_rerun()
-
-    sel_subs = st.multiselect(
-        label="",
-        options=sub_opts,
-        default=st.session_state.sel_subs,
-        key="sel_subs_multiselect",
-    )
-    st.session_state.sel_subs = sel_subs
-
-    # Beds / Baths
     bed_opts  = sorted(df_raw["beds"].dropna().unique().tolist()) if "beds" in df_raw else []
     bath_opts = sorted(df_raw["baths"].dropna().unique().tolist()) if "baths" in df_raw else []
 
     sel_beds  = st.multiselect("Beds", bed_opts, bed_opts) if bed_opts else []
-    sel_baths = st.multiselect("Baths (≤5 only)", bath_opts, bath_opts) if bath_opts else []
+    sel_baths = st.multiselect("Baths", bath_opts, bath_opts) if bath_opts else []
 
-    # Ranges
     size_series = df_raw["size_m2"].dropna()
     rent_series = df_raw["rent_thb"].dropna()
     size_min, size_max = float(size_series.min()), float(size_series.max())
@@ -245,13 +199,11 @@ with st.sidebar:
     metric_label = st.radio("Colour metric", list(metric_labels.keys()))
     metric = metric_labels[metric_label]
 
-    if st.button("Reset all filters"):
-        for k in ("sel_districts", "sel_subs"):
-            st.session_state.pop(k, None)
+    if st.button("Reset filters"):
         st.experimental_rerun()
 
 # ───────────────────────────────────────────────────────────────
-# 8) Apply filters
+# 6) Apply filters
 mask = pd.Series(True, index=df_raw.index)
 if sel_districts:
     mask &= df_raw["district_norm"].isin(sel_districts)
@@ -270,7 +222,7 @@ if df_f.empty:
     st.stop()
 
 # ───────────────────────────────────────────────────────────────
-# 9) Aggregate per district (filtered view)
+# 7) Aggregate per district (filtered view)
 agg = (
     df_f.groupby("district_norm")
         .agg(
@@ -285,6 +237,7 @@ agg = (
         .reset_index()
 )
 
+# Pretty display names for map & tables
 agg_disp = agg.rename(columns={
     "Median_Rent": "Median Rent",
     "Mean_Rent": "Mean Rent",
@@ -294,17 +247,18 @@ agg_disp = agg.rename(columns={
 })
 
 # ───────────────────────────────────────────────────────────────
-# 10) Merge stats into geo layer used for plotting
+# 8) Merge stats into geo layer used for plotting
 gdf = gdf_base.merge(agg_disp, on="district_norm", how="left")
 gdf["District"] = gdf["district_norm"].str.title()
 
+# Warn which districts have no data for current view
 display_metric_col = "Median Rent" if metric == "Median_Rent" else "Median Rent per m²"
 missing = gdf.loc[gdf[display_metric_col].isna(), ["district_norm"]].drop_duplicates()
 if not missing.empty:
     st.warning("No data for: " + ", ".join(missing["district_norm"].str.title().tolist()))
 
 # ───────────────────────────────────────────────────────────────
-# 11) Top-10 table
+# 9) Top-10 table (based on current metric)
 top10_table = (
     gdf[["District", display_metric_col]]
       .dropna(subset=[display_metric_col])
@@ -320,7 +274,7 @@ top10_table = (
 )
 
 # ───────────────────────────────────────────────────────────────
-# 12) Subdistrict drill-down (table + download)
+# 10) Subdistrict drill-down (table + download)
 sub_agg = (
     df_f.groupby(["district_norm", "subdistrict"], dropna=False)
         .agg(
@@ -337,10 +291,18 @@ sub_agg_disp.rename(columns={
     "Median_Rent": "Median Rent",
     "Median_Rent_per_m2": "Median Rent per m²",
 }, inplace=True)
+
 metric_for_sub = "Median Rent" if metric == "Median_Rent" else "Median Rent per m²"
 
 # ───────────────────────────────────────────────────────────────
-# 13) Plotly choropleth — manual center/zoom (version-proof)
+# 11) Plotly choropleth — safe hover_data and guards
+if display_metric_col not in gdf.columns:
+    st.error(f"Missing metric column in map dataframe: {display_metric_col}")
+    st.stop()
+if gdf[display_metric_col].notna().sum() == 0:
+    st.error("No statistics available for the current filters (all NaN).")
+    st.stop()
+
 geojson_obj = json.loads(gdf.to_json())
 hover_data = {
     "District": True,
@@ -349,36 +311,29 @@ hover_data = {
     "25th Percentile": ":,.0f THB",
     "75th Percentile": ":,.0f THB",
     "Listings": True,
-    "district_norm": False,
+    "district_norm": False,  # hide raw key
 }
 
 fig = px.choropleth_mapbox(
     gdf,
     geojson=geojson_obj,
-    locations="district_norm",
-    featureidkey="properties.district_norm",
-    color=display_metric_col,
+    locations="district_norm",                 # column in gdf
+    featureidkey="properties.district_norm",   # property inside geojson features
+    color=display_metric_col,                  # pretty name column
     hover_name="District",
     hover_data=hover_data,
     color_continuous_scale="YlOrRd",
     mapbox_style="carto-positron",
+    center={"lat": 13.7563, "lon": 100.5018},
+    zoom=10.3,
     opacity=0.85,
 )
-
-# Compute center from polygons and set a city-wide zoom
-minx, miny, maxx, maxy = gdf.to_crs(4326).total_bounds
-map_center = {"lat": (miny + maxy) / 2, "lon": (minx + maxx) / 2}
-fig.update_layout(
-    margin=dict(l=0, r=0, t=0, b=0),
-    height=750,
-    mapbox_center=map_center,
-    mapbox_zoom=9.6,  # tweak 9.4–9.8 if you want tighter/looser
-)
+fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=750)
 fig.update_coloraxes(colorbar=dict(title=display_metric_col, tickformat=","))
 
 # ───────────────────────────────────────────────────────────────
-# 14) Layout + compact footer
-col1, col2 = st.columns([0.95, 1.05])
+# 12) Layout
+col1, col2 = st.columns([1, 1])
 
 with col1:
     st.title("Bangkok District Rent Explorer")
@@ -407,34 +362,20 @@ with col1:
 
     st.markdown("---")
     st.markdown("### Subdistricts (khwaeng)")
+    # Scope selector for drilldown (All or a single district)
     dist_opts = ["All Bangkok"] + sorted(sub_agg_disp["District"].unique().tolist())
     chosen_scope = st.selectbox("Scope", dist_opts, index=0)
 
     if chosen_scope == "All Bangkok":
         sub_view = (sub_agg_disp
-                    .sort_values(metric_for_sub, descending=True)
+                    .sort_values(metric_for_sub, ascending=False)
                     .loc[:, ["Subdistrict", "District", metric_for_sub, "Listings"]]
                     .head(15))
     else:
         sub_view = (sub_agg_disp[sub_agg_disp["District"] == chosen_scope]
-                    .sort_values(metric_for_sub, descending=True)
+                    .sort_values(metric_for_sub, ascending=False)
                     .loc[:, ["Subdistrict", metric_for_sub, "Listings"]]
                     .head(15))
-
-    # Streamlit <1.33 may not accept descending kw in sort_values; fallback:
-    try:
-        pass
-    except:
-        if chosen_scope == "All Bangkok":
-            sub_view = (sub_agg_disp
-                        .sort_values(metric_for_sub, ascending=False)
-                        .loc[:, ["Subdistrict", "District", metric_for_sub, "Listings"]]
-                        .head(15))
-        else:
-            sub_view = (sub_agg_disp[sub_agg_disp["District"] == chosen_scope]
-                        .sort_values(metric_for_sub, ascending=False)
-                        .loc[:, ["Subdistrict", metric_for_sub, "Listings"]]
-                        .head(15))
 
     st.dataframe(
         sub_view.style.format({
@@ -454,8 +395,12 @@ with col1:
 
 with col2:
     st.plotly_chart(fig, use_container_width=True)
+    st.markdown("---")
     st.markdown(
-        "—  📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  ·  "
-        "💡 **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**",
-        unsafe_allow_html=True,
+        """
+📺 **[Made by](https://www.youtube.com/@malcolmtalks)**  
+💡  **[Moving to Bangkok?](https://malcolmproducts.gumroad.com/l/yjwzkr)**
+
+        """,
+        unsafe_allow_html=True
     )
