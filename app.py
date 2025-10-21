@@ -373,11 +373,8 @@ fig = px.choropleth_mapbox(
     opacity=0.85,
 )
 # Auto-fit to the polygons (valid prop)
-fig.update_layout(
-    margin=dict(l=0, r=0, t=0, b=0),
-    height=750,
-    mapbox=dict(fitbounds="locations")
-)
+fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), height=750)
+fig.update_mapboxes(fitbounds="locations")
 fig.update_coloraxes(colorbar=dict(title=display_metric_col, tickformat=","))
 
 # ───────────────────────────────────────────────────────────────
